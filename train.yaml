@@ -1,0 +1,53 @@
+model:
+  output_dir: data/gated_diffusion/
+  model_path: timbrooks/instruct-pix2pix
+  mask:
+    act_fn: sigmoid
+
+data:
+  path: osunlp/MagicBrush
+  val_path: val_dataset
+
+logging:
+  dir: logs
+  wandb_project: gated-diffusion
+
+train:
+  num_epochs: 50
+  validation_epochs: 1
+  batch_size: 8
+  mixed_precision: fp16
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: True
+  checkpointing_steps: 138
+
+  unet_learning_rate: 1e-6
+  mask_learning_rate: 1e-5
+  controlnet_learning_rate: 1e-6
+  lr_warmup_steps: 500
+  lr_scheduler: constant
+
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_weight_decay: 1e-2
+  adam_epsilon: 1e-08
+
+  max_grad_norm: 1.0
+
+  seed: 0
+  # resume_from_checkpoint: GD/checkpoints/checkpoint-2
+  resume_from_checkpoint:
+
+  # joint_training: True - training eps unet + mask unet
+  # joint_training: False - freeze eps unet
+  joint_training: False
+  train_mask: False
+  train_epsilon: True
+
+inference:
+  # last - apply mask after all timesteps
+  # all - apply mask on all timesteps
+  # both
+  # none - no mask
+  method: both
+  hard_mask: True
