@@ -597,46 +597,63 @@ def main(
 
     # Potentially load in the weights and states from a previous save
     if train_args.resume_from_checkpoint:
-        if args.resume_from_checkpoint != "latest":
-            path = os.path.basename(args.resume_from_checkpoint)
-        else:
-            # Get the most recent checkpoint
-            dirs = os.listdir(args.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+        path = os.path.join(config.logging.dir, train_args.resume_from_checkpoint)
 
         if path is None:
             accelerator.print(
-                f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
+                f"Checkpoint '{train_args.resume_from_checkpoint}' does not exist. Starting a new training run."
             )
-            args.resume_from_checkpoint = None
-            initial_global_step = 0
+            train_args.resume_from_checkpoint = None
         else:
             accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(args.output_dir, path))
-            global_step = int(path.split("-")[1])
+            accelerator.load_state(os.path.join(model_args.output_dir, path))
+            global_step = int(path.split("-")[-1])
 
-            initial_global_step = global_step
+            resume_global_step = global_step * train_args.gradient_accumulation_steps
             first_epoch = global_step // num_update_steps_per_epoch
-    else:
-        initial_global_step = 0
+            resume_step = resume_global_step % (num_update_steps_per_epoch * train_args.gradient_accumulation_steps)
 
-    progress_bar = tqdm(
-        range(0, args.max_train_steps),
-        initial=initial_global_step,
-        desc="Steps",
-        # Only show the progress bar once on each machine.
-        disable=not accelerator.is_local_main_process,
-    )
+    progress_bar = tqdm(range(global_step, max_train_steps), disable=not accelerator.is_local_main_process)
+    progress_bar.set_description("Steps")
 
+    ce_criterion = torch.nn.CrossEntropyLoss()
+    
+    # import segmenter for calculating loss
+    from models.text_segmenter.unet import UNet
+    from collections import OrderedDict
+    
+    segmenter = UNet(4,96, True).cuda() 
+    state_dict = torch.load(model_args.character_aware_loss_ckpt, map_location='cpu') 
+    # create new OrderedDict that does not contain `module.`
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:] 
+        new_state_dict[name] = v
+    segmenter.load_state_dict(new_state_dict)
+    segmenter.eval()
+    
     image_logs = None
-    for epoch in range(first_epoch, args.num_train_epochs):
+    for epoch in range(first_epoch, num_train_epochs):
+        train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet):
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = vae.encode(batch["images"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
+                
+                # get image mask
+                image_masks = batch["image_masks"]
+                
+                # apply mask to image
+                masked_images = batch["images"] * (1 - image_masks).unsqueeze(1)
+                masked_latents = vae.encode(masked_images.to(dtype=weight_dtype)).latent_dist.sample()
+                masked_latents = masked_latents * vae.config.scaling_factor
+                
+                # get segmentation mask
+                segmentation_masks = batch["segmentation_masks"]
+                image_masks_256 = F.interpolate(image_masks.unsqueeze(1), size=(256, 256), mode='nearest')
+                segmentation_masks = image_masks_256 * segmentation_masks 
+                latents_masks = F.interpolate(image_masks.unsqueeze(1), size=(64, 64), mode='nearest')
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -650,9 +667,10 @@ def main(
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"], return_dict=False)[0]
-
-                controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                encoder_hidden_states = text_encoder(batch["prompts"])[0]
+                
+                # let controlnet condition on segmentation mask ONLY
+                controlnet_image = segmentation_masks[:16]
 
                 down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
@@ -681,7 +699,16 @@ def main(
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                
+                pred_x0 = noise_scheduler.get_x0_from_noise(model_pred, timesteps, noisy_latents)
+                resized_charmap = F.interpolate(batch["segmentation_masks"].float(), size=(64, 64), mode="nearest").long()
+                
+                ce_loss = ce_criterion(segmenter(pred_x0.float()), resized_charmap.squeeze(1))
+                mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean") 
+                loss = mse_loss + ce_loss * args.character_aware_loss_lambda 
+                
+                avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
+                train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -748,23 +775,16 @@ def main(
         controlnet = unwrap_model(controlnet)
         controlnet.save_pretrained(args.output_dir)
 
-        if args.push_to_hub:
-            save_model_card(
-                repo_id,
-                image_logs=image_logs,
-                base_model=args.pretrained_model_name_or_path,
-                repo_folder=args.output_dir,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
+        
 
     accelerator.end_training()
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--name", type=str, required=True)
+    parser.add_argument("--config", type=str, required=True)
+    args = parser.parse_args()
+
+    config = OmegaConf.load(args.config)
+    main(run_name=args.name, config=config)
