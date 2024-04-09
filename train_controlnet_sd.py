@@ -476,45 +476,48 @@ def main(
         for image in examples[image_column]:
             image = image.strip()
             first, second = image.split('_')
-            image_path = f'{data_args.dataset_path}/{first}/{second}/image.jpg'
+            image_path = f'{data_args.dataset_path}/{first}/{second}/{first}_{second}_stretched.jpg'
             ocrs = open(f'{data_args.dataset_path}/{first}/{second}/ocr.txt').readlines() 
-            
-            image = Image.open(image_path).convert("RGB")
-            
-            image_mask = get_mask(ocrs)
-            image_mask_np = np.array(image_mask)
-            image_mask_tensor = torch.from_numpy(image_mask_np)
-            images.append(image) 
-            
-            if data_args.no_pos_con:
-                segmentation_mask = np.load(f'{data_args.dataset_path}/{first}/{second}/charseg.npy') * 0 
-            elif data_args.no_con:
-                segmentation_mask = (np.load(f'{data_args.dataset_path}/{first}/{second}/charseg.npy') > 0).astype(np.float32) 
-            else:
-                segmentation_mask = np.load(f'{data_args.dataset_path}/{first}/{second}/charseg.npy') 
 
-            if data_args.segmentation_mask_aug: # 10% dilate / 10% erode / 10% drop
-                random_value = random.random()
-                if random_value < 0.6:
-                    pass
-                elif random_value < 0.7:
-                    kernel = np.ones((3, 3), dtype=np.uint8)
-                    segmentation_mask = cv2.dilate(segmentation_mask.astype(np.uint8), kernel, iterations=1)
-                elif random_value < 0.8:
-                    kernel = np.ones((3, 3), dtype=np.uint8)
-                    segmentation_mask = cv2.erode(segmentation_mask.astype(np.uint8), kernel, iterations=1)
-                elif random_value < 0.85:
-                    kernel = np.ones((3, 3), dtype=np.uint8)
-                    segmentation_mask = cv2.dilate(segmentation_mask.astype(np.uint8), kernel, iterations=2)
-                elif random_value < 0.9:
-                    kernel = np.ones((3, 3), dtype=np.uint8)
-                    segmentation_mask = cv2.erode(segmentation_mask.astype(np.uint8), kernel, iterations=2)
+            try:
+                image = Image.open(image_path).convert("RGB")
+                
+                image_mask = get_mask(ocrs)
+                image_mask_np = np.array(image_mask)
+                image_mask_tensor = torch.from_numpy(image_mask_np)
+                images.append(image) 
+                
+                if data_args.no_pos_con:
+                    segmentation_mask = np.load(f'{data_args.dataset_path}/{first}/{second}/charseg.npy') * 0 
+                elif data_args.no_con:
+                    segmentation_mask = (np.load(f'{data_args.dataset_path}/{first}/{second}/charseg.npy') > 0).astype(np.float32) 
                 else:
-                    drop_mask = np.random.rand(*segmentation_mask.shape) < 0.1
-                    segmentation_mask[drop_mask] = 0 # set character to non-character with 10% probability
-            
-            segmentation_masks.append(segmentation_mask)
-            image_masks.append(image_mask_tensor)
+                    segmentation_mask = np.load(f'{data_args.dataset_path}/{first}/{second}/charseg.npy') 
+    
+                if data_args.segmentation_mask_aug: # 10% dilate / 10% erode / 10% drop
+                    random_value = random.random()
+                    if random_value < 0.6:
+                        pass
+                    elif random_value < 0.7:
+                        kernel = np.ones((3, 3), dtype=np.uint8)
+                        segmentation_mask = cv2.dilate(segmentation_mask.astype(np.uint8), kernel, iterations=1)
+                    elif random_value < 0.8:
+                        kernel = np.ones((3, 3), dtype=np.uint8)
+                        segmentation_mask = cv2.erode(segmentation_mask.astype(np.uint8), kernel, iterations=1)
+                    elif random_value < 0.85:
+                        kernel = np.ones((3, 3), dtype=np.uint8)
+                        segmentation_mask = cv2.dilate(segmentation_mask.astype(np.uint8), kernel, iterations=2)
+                    elif random_value < 0.9:
+                        kernel = np.ones((3, 3), dtype=np.uint8)
+                        segmentation_mask = cv2.erode(segmentation_mask.astype(np.uint8), kernel, iterations=2)
+                    else:
+                        drop_mask = np.random.rand(*segmentation_mask.shape) < 0.1
+                        segmentation_mask[drop_mask] = 0 # set character to non-character with 10% probability
+                
+                segmentation_masks.append(segmentation_mask)
+                image_masks.append(image_mask_tensor)
+            except Image.exceptions.IOError:
+                print(f"IOError: Image cannot be found for {image_path}")
             
         examples["images"] = [train_transforms(image).sub_(0.5).div_(0.5) for image in images] 
         examples["prompts"] = tokenize_captions(examples)
@@ -616,21 +619,22 @@ def main(
     progress_bar = tqdm(range(global_step, max_train_steps), disable=not accelerator.is_local_main_process)
     progress_bar.set_description("Steps")
 
-    ce_criterion = torch.nn.CrossEntropyLoss()
+    # ce_criterion = torch.nn.CrossEntropyLoss()
+    ctc_criterion = torch.nn.CTCLoss()
     
-    # import segmenter for calculating loss
-    from models.text_segmenter.unet import UNet
-    from collections import OrderedDict
+    # # import segmenter for calculating loss
+    # from models.text_segmenter.unet import UNet
+    # from collections import OrderedDict
     
-    segmenter = UNet(4,96, True).cuda() 
-    state_dict = torch.load(model_args.character_aware_loss_ckpt, map_location='cpu') 
-    # create new OrderedDict that does not contain `module.`
-    new_state_dict = OrderedDict()
-    for k, v in state_dict.items():
-        name = k[7:] 
-        new_state_dict[name] = v
-    segmenter.load_state_dict(new_state_dict)
-    segmenter.eval()
+    # segmenter = UNet(4,96, True).cuda() 
+    # state_dict = torch.load(model_args.character_aware_loss_ckpt, map_location='cpu') 
+    # # create new OrderedDict that does not contain `module.`
+    # new_state_dict = OrderedDict()
+    # for k, v in state_dict.items():
+    #     name = k[7:] 
+    #     new_state_dict[name] = v
+    # segmenter.load_state_dict(new_state_dict)
+    # segmenter.eval()
     
     image_logs = None
     for epoch in range(first_epoch, num_train_epochs):
@@ -701,9 +705,11 @@ def main(
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
                 
                 pred_x0 = noise_scheduler.get_x0_from_noise(model_pred, timesteps, noisy_latents)
-                resized_charmap = F.interpolate(batch["segmentation_masks"].float(), size=(64, 64), mode="nearest").long()
+                # resized_charmap = F.interpolate(batch["segmentation_masks"].float(), size=(64, 64), mode="nearest").long()
                 
                 ce_loss = ce_criterion(segmenter(pred_x0.float()), resized_charmap.squeeze(1))
+                ctc_loss = ctc_criterion
+                
                 mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean") 
                 loss = mse_loss + ce_loss * train_args.character_aware_loss_lambda 
                 
