@@ -7,7 +7,7 @@
 # ------------------------------------------
 
 import torch.nn.functional as F
-from model.text_segmenter.unet_parts import *
+from models.text_segmenter.unet_parts import *
 
 
 class UNet(nn.Module):

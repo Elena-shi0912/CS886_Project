@@ -59,8 +59,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 if is_wandb_available():
     import wandb
 
-# Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.26.0")
+
 
 logger = get_logger(__name__)
 
@@ -547,7 +546,7 @@ def main(
 
     # Scheduler and math around the number of training steps.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / train_args.gradient_accumulation_steps)
-    max_train_steps = train_args.num_epochs * num_update_steps_per_epoch
+    max_train_steps = train_args.num_train_epochs * num_update_steps_per_epoch
 
     lr_scheduler = get_scheduler(
         train_args.lr_scheduler,
@@ -703,12 +702,35 @@ def main(
                 pred_x0 = noise_scheduler.get_x0_from_noise(model_pred, timesteps, noisy_latents)
                 resized_charmap = F.interpolate(batch["segmentation_masks"].float(), size=(64, 64), mode="nearest").long()
                 
+                # if train_args.use_ocr:
+                #     # import the ocr
+                #     import easyocr
+                #     reader = easyocr.Reader(['ch_sim','en']) # this needs to run only once to load the model into memory
+                #     result = reader.readtext('chinese.jpg')
+                # log images in diffusion process
+                pred_image = vae.decode(pred_x0.to(vae.dtype) / vae.config.scaling_factor, return_dict=False)[0]
+                log_images = {
+                    "target_images": batch["images"],
+                    "output_images": pred_image,
+                    "controlnet condition": controlnet_image,
+                }
+
+                for k, tensor in log_images.items():
+                    if tensor is None:
+                        continue
+                    log_images[k] = [wandb.Image(tensor[i, :, :, :]) for i in range(tensor.shape[0])]
+                
                 ce_loss = ce_criterion(segmenter(pred_x0.float()), resized_charmap.squeeze(1))
                 mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean") 
                 loss = mse_loss + ce_loss * train_args.character_aware_loss_lambda 
                 
                 avg_loss = accelerator.gather(loss.repeat(train_args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / train_args.gradient_accumulation_steps
+                
+                accelerator.log(
+                    {"train_loss": train_loss, "ce_loss": ce_loss, "mse_loss": mse_loss, **log_images},
+                    step=global_step,
+                )
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -749,22 +771,9 @@ def main(
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-                    if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                        image_logs = log_validation(
-                            vae,
-                            text_encoder,
-                            tokenizer,
-                            unet,
-                            controlnet,
-                            args,
-                            accelerator,
-                            weight_dtype,
-                            global_step,
-                        )
-
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+            #accelerator.log(logs, step=global_step)
 
             if global_step >= train_args.max_train_steps:
                 break
@@ -788,3 +797,4 @@ if __name__ == "__main__":
 
     config = OmegaConf.load(args.config)
     main(run_name=args.name, config=config)
+    

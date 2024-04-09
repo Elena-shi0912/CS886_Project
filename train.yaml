@@ -1,29 +1,33 @@
 model:
-  output_dir: data/text-diffuser/
+  output_dir: /data/text-diffuser/
   model_path: runwayml/stable-diffusion-v1-5
   character_aware_loss_lambda: 0.01
+  character_aware_loss_ckpt: /data/yunyi/textdiffuser-ckpt/character_aware_loss_unet.pth
 
 data:
-  path: osunlp/MagicBrush
+  dataset_path: /data/yunyi/train_data
+  dataset_name: MARIO-10M
+  train_dataset_index_file: train_dataset_index_file.txt
+  image_column: 
+  caption_column: 
+  max_train_samples:
   val_path: val_dataset
 
 logging:
   dir: logs
-  wandb_project: gated-diffusion
+  wandb_project: text-diffuser
 
 train:
-  num_epochs: 50
+  num_train_epochs: 50
   validation_epochs: 1
-  batch_size: 8
+  batch_size: 24
   mixed_precision: fp16
   gradient_accumulation_steps: 4
   gradient_checkpointing: True
   checkpointing_steps: 138
 
-  unet_learning_rate: 1e-6
-  mask_learning_rate: 1e-5
-  controlnet_learning_rate: 1e-6
-  lr_warmup_steps: 500
+  learning_rate: 1e-5
+  lr_warmup_steps: 0
   lr_scheduler: constant
 
   adam_beta1: 0.9
@@ -37,11 +41,10 @@ train:
   # resume_from_checkpoint: GD/checkpoints/checkpoint-2
   resume_from_checkpoint:
 
-  # joint_training: True - training eps unet + mask unet
-  # joint_training: False - freeze eps unet
-  joint_training: False
-  train_mask: False
-  train_epsilon: True
+  character_aware_loss_lambda: 0.01
+  mask_all_ratio: 0.5
+  segmentation_mask_aug: True
+
 
 inference:
   # last - apply mask after all timesteps
