@@ -16,12 +16,12 @@ import torch.nn as nn
 from transformers import CLIPTokenizer
 from PIL import Image, ImageDraw, ImageFont
 from util import get_width, get_key_words, adjust_overlap_box, shrink_box, adjust_font_size, alphabet_dic
-from model.layout_transformer import LayoutTransformer, TextConditioner
+from models.layout_transformer import LayoutTransformer, TextConditioner
 from termcolor import colored
 
 # import layout transformer
 model = LayoutTransformer().cuda().eval()
-model.load_state_dict(torch.load('textdiffuser-ckpt/layout_transformer.pth'))
+model.load_state_dict(torch.load('layout_transformer.pth'))
 
 # import text encoder and tokenizer
 text_encoder = TextConditioner().cuda().eval()
