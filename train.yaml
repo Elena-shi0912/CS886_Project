@@ -5,13 +5,18 @@ model:
   character_aware_loss_ckpt: /data/yunyi/textdiffuser-ckpt/character_aware_loss_unet.pth
 
 data:
-  dataset_path: /data/yunyi/train_data
+  dataset_path: /data/yunyi/train_data_new/train_data
   dataset_name: MARIO-10M
   train_dataset_index_file: train_dataset_index_file.txt
   image_column: 
   caption_column: 
   max_train_samples:
   val_path: val_dataset
+  mask_all_ratio: 0.5
+  no_pos_con: False
+  no_con: False
+  segmentation_mask_aug: True
+  drop_caption: True
 
 logging:
   dir: logs
@@ -43,7 +48,7 @@ train:
 
   character_aware_loss_lambda: 0.01
   mask_all_ratio: 0.5
-  segmentation_mask_aug: True
+  segmentation_mask_aug: False
 
 
 inference:

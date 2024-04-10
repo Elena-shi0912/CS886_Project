@@ -347,3 +347,21 @@ def inpainting_merge_image(original_image, mask_image, inpainting_image):
     mask_image = mask_image.point(table, "1")
     merged_image = Image.composite(inpainting_image, original_image, mask_image)
     return merged_image
+
+import sys
+from PIL import Image
+from typing import List
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+
+
+def scale_tensors(tensors: torch.FloatTensor, image_size: int) -> torch.FloatTensor:
+    scaled_tensors = F.interpolate(
+        tensors,
+        size=(image_size, image_size),
+        mode="bilinear",
+        align_corners=False,
+    )
+    return scaled_tensors

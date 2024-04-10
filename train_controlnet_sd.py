@@ -54,7 +54,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
-
+from util import scale_tensors
 
 if is_wandb_available():
     import wandb
@@ -475,7 +475,7 @@ def main(
         for image in examples[image_column]:
             image = image.strip()
             first, second = image.split('_')
-            image_path = f'{data_args.dataset_path}/{first}/{second}/image.jpg'
+            image_path = f'{data_args.dataset_path}/{first}/{second}/{first}_{second}_stretched.jpg'
             ocrs = open(f'{data_args.dataset_path}/{first}/{second}/ocr.txt').readlines() 
             
             image = Image.open(image_path).convert("RGB")
@@ -512,7 +512,17 @@ def main(
                     drop_mask = np.random.rand(*segmentation_mask.shape) < 0.1
                     segmentation_mask[drop_mask] = 0 # set character to non-character with 10% probability
             
+            segmentation_mask = Image.fromarray(segmentation_mask.astype(np.uint8))
             segmentation_masks.append(segmentation_mask)
+            segmentation_masks = [image.convert("RGB") for image in segmentation_masks]
+            conditioning_image_transforms = transforms.Compose(
+                [
+                    transforms.Resize(512, interpolation=transforms.InterpolationMode.BILINEAR),
+                    transforms.CenterCrop(512),
+                    transforms.ToTensor(),
+                ]
+            )
+            segmentation_masks = [conditioning_image_transforms(image) for image in segmentation_masks]
             image_masks.append(image_mask_tensor)
             
         examples["images"] = [train_transforms(image).sub_(0.5).div_(0.5) for image in images] 
@@ -533,7 +543,9 @@ def main(
         images = images.to(memory_format=torch.contiguous_format).float()
         prompts = torch.stack([example["prompts"] for example in examples])
         image_masks = torch.cat([example["image_masks"].unsqueeze(0) for example in examples],0)
-        segmentation_masks = torch.cat([torch.from_numpy(example["segmentation_masks"]).unsqueeze(0).unsqueeze(0) for example in examples], dim=0)
+        #segmentation_masks = torch.cat([torch.from_numpy(example["segmentation_masks"]).unsqueeze(0).unsqueeze(0) for example in examples], dim=0)
+        segmentation_masks = torch.stack([example["segmentation_masks"] for example in examples])
+        segmentation_masks = segmentation_masks.to(memory_format=torch.contiguous_format).float()
         return {"images": images, "prompts": prompts, "segmentation_masks": segmentation_masks, "image_masks": image_masks}
 
 
@@ -650,9 +662,11 @@ def main(
                 
                 # get segmentation mask
                 segmentation_masks = batch["segmentation_masks"]
-                image_masks_256 = F.interpolate(image_masks.unsqueeze(1), size=(256, 256), mode='nearest')
-                segmentation_masks = image_masks_256 * segmentation_masks 
-                latents_masks = F.interpolate(image_masks.unsqueeze(1), size=(64, 64), mode='nearest')
+                # image_masks_256 = F.interpolate(image_masks.unsqueeze(1), size=(256, 256), mode='nearest')
+                # segmentation_masks = image_masks_256 * segmentation_masks 
+                image_masks_512 = F.interpolate(image_masks.unsqueeze(1), size=(512, 512), mode='nearest')
+                segmentation_masks = image_masks_512 * segmentation_masks
+                # latents_masks = F.interpolate(image_masks.unsqueeze(1), size=(64, 64), mode='nearest')
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -669,7 +683,9 @@ def main(
                 encoder_hidden_states = text_encoder(batch["prompts"])[0]
                 
                 # let controlnet condition on segmentation mask ONLY
-                controlnet_image = segmentation_masks[:16]
+                controlnet_image = segmentation_masks.to(dtype=weight_dtype)
+                #print(noisy_latents.shape, timesteps.shape, encoder_hidden_states.shape, controlnet_image.shape)
+                
 
                 down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
@@ -699,7 +715,12 @@ def main(
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
                 
-                pred_x0 = noise_scheduler.get_x0_from_noise(model_pred, timesteps, noisy_latents)
+                def get_x0_from_noise(noise_scheduler, noise, t, x_t): # add this function
+                    noise_scheduler.alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=noise.device, dtype=noise.dtype)
+                    x_0 = 1 / torch.sqrt(noise_scheduler.alphas_cumprod[t][:,None,None,None]) * x_t  -  torch.sqrt(1 / noise_scheduler.alphas_cumprod[t][:,None,None,None] - 1) * noise
+                    return x_0
+                
+                pred_x0 = get_x0_from_noise(noise_scheduler, model_pred, timesteps, noisy_latents)
                 resized_charmap = F.interpolate(batch["segmentation_masks"].float(), size=(64, 64), mode="nearest").long()
                 
                 # if train_args.use_ocr:
