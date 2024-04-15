@@ -42,11 +42,14 @@ def MARIOEval_evaluate_results(root, datasets_with_images, datasets, methods, gp
     method_res = {}
     device = "cuda:" + str(gpu)
     for method_idx, method in enumerate(methods):
-        if method_idx != gpu:  # running in different gpus simultaneously to save time
-            continue
+        # if method_idx != gpu:  # running in different gpus simultaneously to save time
+        #     continue
         print("\nmethod:", method)
         dataset_res = {}
         root_res = os.path.join(root, 'generation', method)
+        gen_path = []
+        gt_path = []
+        fids = []
         for dataset in datasets:
             print("dataset:", dataset)
             dataset_res[dataset] = {}
@@ -54,45 +57,48 @@ def MARIOEval_evaluate_results(root, datasets_with_images, datasets, methods, gp
                 dataset_res[dataset]['clipscore'], dataset_res[dataset]['scores'] =\
                     eval_clipscore(root_eval, root_res, dataset, device, num_images_per_prompt)
             if eval_fid_flag and dataset in datasets_with_images:
-                gt_path = os.path.join(root_eval, dataset, 'images')
-                fids = []
                 for idx in range(num_images_per_prompt):
-                    gen_path = os.path.join(root_res, dataset, 'images_' + str(idx))
-                    fids.append(calculate_fid_given_paths(paths=[gt_path, gen_path]))
-                print("fid:", np.mean(fids), fids)
-                dataset_res[dataset]['fid'] = np.mean(fids)
+                    gt_path.append(os.path.join(root_eval, dataset, 'images'))
+                    gen_path.append(os.path.join(root_res, dataset, 'images_' + str(idx)))
+        print(gt_path, gen_path)
+        fids.append(calculate_fid_given_paths(paths=[gt_path, gen_path]))
+        print("fid:", np.mean(fids), fids)
+        # dataset_res[dataset]['fid'] = np.mean(fids)
 
-        if eval_clipscore_flag:
-            method_clipscores = []
-            for seed in range(num_images_per_prompt):
-                clipscore_list = []
-                for dataset in dataset_res.keys():
-                    clipscore_list += [_['CLIPScore'] for _ in dataset_res[dataset]['scores'][seed].values()]
-                method_clipscores.append(np.mean(clipscore_list))
-            method_clipscore = np.mean(method_clipscores)
-            dataset_res['clipscore'] = method_clipscore
-        if eval_fid_flag:
-            method_fids = []
-            for idx in range(num_images_per_prompt):
-                gt_paths = []
-                gen_paths = []
-                for dataset in dataset_res.keys():
-                    if dataset in datasets_with_images:
-                        gt_paths.append(os.path.join(root_eval, dataset, 'images'))
-                        gen_paths.append(os.path.join(root_res, dataset, 'images_' + str(idx)))
-                if len(gt_paths):
-                    method_fids.append(calculate_fid_given_paths(paths=[gt_paths, gen_paths]))
-            print("fid:", np.mean(method_fids), method_fids)
-            method_fid = np.mean(method_fids)
-            dataset_res['fid'] = method_fid
+        # if eval_clipscore_flag:
+        #     method_clipscores = []
+        #     for seed in range(num_images_per_prompt):
+        #         clipscore_list = []
+        #         for dataset in dataset_res.keys():
+        #             clipscore_list += [_['CLIPScore'] for _ in dataset_res[dataset]['scores'][seed].values()]
+        #         method_clipscores.append(np.mean(clipscore_list))
+        #     method_clipscore = np.mean(method_clipscores)
+        #     dataset_res['clipscore'] = method_clipscore
+        # if eval_fid_flag:
+        #     method_fids = []
+        #     for idx in range(num_images_per_prompt):
+        #         gt_paths = []
+        #         gen_paths = []
+        #         for dataset in dataset_res.keys():
+        #             if dataset in datasets_with_images:
+        #                 gt_paths.append(os.path.join(root_eval, dataset, 'images'))
+        #                 gen_paths.append(os.path.join(root_res, dataset, 'images_' + str(idx)))
+        #         print(gt_paths, gen_paths)
 
-        method_res[method] = dataset_res
-        with open(os.path.join(root_res, 'eval.json'), 'w') as fw:
-            json.dump(dataset_res, fw)
+        #         if len(gt_paths):
+        #             print(gt_paths, gen_paths)
+        #             method_fids.append(calculate_fid_given_paths(paths=[gt_paths, gen_paths]))
+        #     print("fid:", np.mean(method_fids), method_fids)
+        #     method_fid = np.mean(method_fids)
+        #     dataset_res['fid'] = method_fid
 
-    print(method_res)
-    with open(os.path.join(root, 'generation', 'eval.json'), 'w') as fw:
-        json.dump(method_res, fw)
+        # method_res[method] = dataset_res
+        # with open(os.path.join(root_res, 'eval.json'), 'w') as fw:
+        #     json.dump(dataset_res, fw)
+
+    # print(method_res)
+    # with open(os.path.join(root, 'generation', 'eval.json'), 'w') as fw:
+    #     json.dump(method_res, fw)
 
 
 def merge_eval_results(root, methods):
@@ -158,10 +164,13 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-    datasets_with_images = ['TMDBEval500', 'OpenLibraryEval500', 'LAIONEval4000']
-    datasets = datasets_with_images + ['ChineseDrawText', 'DrawBenchText', 'DrawTextCreative']
-    methods = ['textdiffuser', 'controlnet', 'deepfloyd', 'stablediffusion'] 
+    datasets_with_images = ['LAIONEval4000', 'TMDBEval500']
+    datasets = datasets_with_images
+    # datasets = datasets_with_images + ['ChineseDrawText', 'DrawBenchText', 'DrawTextCreative']
+    # methods = ['textdiffuser', 'controlnet', 'deepfloyd', 'stablediffusion'] 
+    methods = ['controlnet_canny','controlnet_seg','controlnet_seg_glyph''controlnet_scribble'] 
+
 
     MARIOEval_evaluate_results(args.root, datasets_with_images, datasets, methods, args.gpu,
-                               eval_clipscore_flag=True, eval_fid_flag=True, num_images_per_prompt=4)
-    merge_eval_results(args.root, methods)
+                               eval_clipscore_flag=False, eval_fid_flag=True, num_images_per_prompt=4)
+    # merge_eval_results(args.root, methods)
